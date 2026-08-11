@@ -1,0 +1,8 @@
+node_modules/
+dist/
+build/tmp/
+*.log
+.claude/
+
+# Токен для скрипта релизов (build/release.js) — секрет, никогда не коммитить.
+.release-token

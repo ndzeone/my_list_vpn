@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'" />
+<title>My List VPN</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="authScreen" class="auth-screen hidden">
+    <div class="auth-card">
+      <div class="brand auth-brand">
+        <span class="brand-dot"></span>
+        <span class="brand-text">My List <b>VPN</b></span>
+      </div>
+
+      <div id="authRegisterForm">
+        <h2>Создать локальный аккаунт</h2>
+        <p class="muted small">Хранится только на этом компьютере и защищает список ваших серверов (vless-ключи, конфиги AmneziaWG). <b>Пароль нельзя восстановить</b> — придумайте такой, который не забудете.</p>
+        <input id="regEmail" type="email" placeholder="Email" autocomplete="username" />
+        <input id="regPassword" type="password" placeholder="Пароль (не менее 4 символов)" autocomplete="new-password" />
+        <input id="regPassword2" type="password" placeholder="Повторите пароль" autocomplete="new-password" />
+        <button id="registerBtn" class="btn btn-primary btn-block">Создать аккаунт</button>
+      </div>
+
+      <div id="authLoginForm" class="hidden">
+        <h2>Вход</h2>
+        <p class="muted small" id="loginEmailLabel"></p>
+        <input id="loginPassword" type="password" placeholder="Пароль" autocomplete="current-password" />
+        <button id="loginBtn" class="btn btn-primary btn-block">Войти</button>
+        <button id="resetAccountBtn" class="btn btn-ghost btn-block btn-danger">Забыли пароль? Сбросить аккаунт</button>
+      </div>
+
+      <div id="authError" class="modal-error hidden"></div>
+    </div>
+  </div>
+
+  <div id="appRoot" class="app-shell hidden">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span class="brand-text">My List <b>VPN</b></span>
+        <button id="updateBadge" class="update-badge hidden" title="Доступно обновление — нажмите, чтобы открыть страницу загрузки">
+          <span class="update-badge-dot"></span>
+          <span id="updateBadgeText">Обновление</span>
+        </button>
+      </div>
+      <button id="settingsBtn" class="icon-btn" title="Настройки">
+        <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19.14 12.94a7.14 7.14 0 0 0 .06-.94 7.14 7.14 0 0 0-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.3 7.3 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.84a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.5a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.42.32.66.22l2.39-.96c.49.38 1.03.7 1.62.94l.36 2.54c.05.24.25.42.5.42h3.84c.25 0 .45-.18.5-.42l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.24.1.52.02.66-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Z"/></svg>
+      </button>
+    </header>
+
+    <div id="adminBanner" class="banner banner-warn hidden">
+      Нужны права администратора для TUN-режима.
+      <button id="relaunchAdminBtn" class="btn btn-small">Перезапустить от администратора</button>
+    </div>
+
+    <main class="stage">
+      <div class="power-wrap">
+        <button id="powerBtn" class="power-btn" aria-label="Подключить">
+          <svg viewBox="0 0 24 24" width="46" height="46"><path d="M12 3v9" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" fill="none"/><path d="M6.5 6.5a8 8 0 1 0 11 0" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" fill="none"/></svg>
+        </button>
+        <div id="ringPulse" class="ring-pulse"></div>
+      </div>
+
+      <div class="status-text" id="statusText">Отключено</div>
+      <div class="status-sub" id="statusSub">Нажмите на кнопку, чтобы подключиться</div>
+
+      <button id="serverCard" class="server-card">
+        <div class="server-card-icon" id="serverTypeBadge">—</div>
+        <div class="server-card-info">
+          <div class="server-card-name" id="serverCardName">Нет добавленных серверов</div>
+          <div class="server-card-sub" id="serverCardSub">Нажмите, чтобы добавить конфиг</div>
+        </div>
+        <div class="server-card-ping" id="serverCardPing"></div>
+        <div class="server-card-chevron">›</div>
+      </button>
+
+      <details class="log-disclosure">
+        <summary>Журнал соединения</summary>
+        <div class="log-panel">
+          <pre id="logOutput" class="log-output"></pre>
+          <button id="clearLogBtn" class="btn btn-small btn-ghost">Очистить</button>
+        </div>
+      </details>
+    </main>
+  </div>
+
+  <!-- Панель списка серверов -->
+  <div id="serverPanelBackdrop" class="panel-backdrop hidden">
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Серверы</h2>
+        <button id="closeServerPanel" class="icon-btn">✕</button>
+      </div>
+      <button id="addProfileBtn" class="btn btn-primary btn-block">+ Добавить конфиг</button>
+      <div class="profile-list" id="profileList"><!-- профили --></div>
+    </div>
+  </div>
+
+  <!-- Панель настроек -->
+  <div id="settingsPanelBackdrop" class="panel-backdrop hidden">
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Настройки</h2>
+        <button id="closeSettingsPanel" class="icon-btn">✕</button>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-title">Аккаунт</div>
+        <div class="account-row">
+          <div>
+            <div class="account-email" id="accountEmail">—</div>
+            <div class="muted small" id="accountIdText">ID: —</div>
+          </div>
+          <button id="logoutBtn" class="btn btn-ghost btn-small">Выйти</button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-title">Режим</div>
+        <p class="muted small">TUN — весь трафик устройства идёт через VPN. Требуются права администратора (приложение запрашивает их автоматически при запуске).</p>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-title">Движки туннеля</div>
+        <p class="muted small">Xray-core — для vless://, AmneziaWG — для конфигов Amnezia и обычного WireGuard.</p>
+
+        <div class="engine-card">
+          <div class="engine-info">
+            <h3>Xray-core + tun2socks <span class="tag tag-small">VLESS</span></h3>
+            <p id="xrayStatusText" class="muted">проверка…</p>
+          </div>
+          <button id="installXrayBtn" class="btn btn-primary btn-small">Установить</button>
+        </div>
+        <div class="progress-bar hidden" id="xrayProgress"><div class="progress-fill"></div></div>
+
+        <div class="engine-card">
+          <div class="engine-info">
+            <h3>AmneziaWG <span class="tag tag-small">Amnezia / WireGuard</span></h3>
+            <p id="amneziaStatusText" class="muted">проверка…</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-title">О программе</div>
+        <p class="muted small" id="versionText"></p>
+      </div>
+    </div>
+  </div>
+
+  <div id="modalBackdrop" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2>Добавить конфиг</h2>
+      <p class="muted">Вставьте ссылку <code>vless://…</code>, <code>trojan://…</code>, конфиг AmneziaWG / WireGuard целиком — или ссылку-подписку (http/https), тогда добавятся сразу все серверы из неё.</p>
+      <input id="modalName" type="text" placeholder="Название (необязательно, для подписки не используется)" />
+      <textarea id="modalText" rows="8" placeholder="vless://... или trojan://... или https://.../subscription или [Interface]..."></textarea>
+      <div id="modalError" class="modal-error hidden"></div>
+      <div class="modal-actions">
+        <button id="modalCancel" class="btn btn-ghost">Отмена</button>
+        <button id="modalSave" class="btn btn-primary">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

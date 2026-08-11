@@ -1,0 +1,47 @@
+{
+  "name": "my-list-vpn",
+  "version": "1.0.0",
+  "description": "My List VPN — клиент с TUN-режимом для VLESS (Xray) и AmneziaWG/WireGuard конфигов",
+  "main": "main.js",
+  "author": "dz2ell",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "gen-icon": "node build/generate-icon.js",
+    "fetch-amneziawg": "node build/fetch-amneziawg.js",
+    "dist": "npm run gen-icon && electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^32.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16"
+  },
+  "build": {
+    "appId": "com.dz2ell.mylistvpn",
+    "productName": "My List VPN",
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "renderer/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "resources/amneziawg", "to": "amneziawg" }
+    ],
+    "win": {
+      "target": [ { "target": "nsis", "arch": [ "x64" ] } ],
+      "icon": "assets/icon.ico",
+      "requestedExecutionLevel": "requireAdministrator"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  }
+}
