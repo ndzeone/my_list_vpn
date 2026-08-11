@@ -53,9 +53,9 @@ async function getAdapterIndex(name, log, retries = 20, delayMs = 500) {
   throw new Error(`Адаптер "${name}" не появился в системе (tun2socks не запустился?).`);
 }
 
-async function configureTunAdapter(log, dnsServers = ['1.1.1.1', '1.0.0.1']) {
+async function configureTunAdapter(log, dnsServers = ['1.1.1.1', '1.0.0.1'], tunIp = TUN_IP) {
   const ifIndex = await getAdapterIndex(TUN_NAME, log);
-  await run('netsh', ['interface', 'ipv4', 'set', 'address', `name="${TUN_NAME}"`, 'static', TUN_IP, TUN_MASK], log);
+  await run('netsh', ['interface', 'ipv4', 'set', 'address', `name="${TUN_NAME}"`, 'static', tunIp, TUN_MASK], log);
   await run(
     'netsh',
     ['interface', 'ipv4', 'set', 'dnsservers', `name="${TUN_NAME}"`, 'static', dnsServers[0], 'primary'],
@@ -83,13 +83,13 @@ async function removeBypassRoute(serverIp, log) {
   }
 }
 
-async function setDefaultRouteViaTun(tunIfIndex, log) {
-  await run('route', ['add', '0.0.0.0', 'mask', '0.0.0.0', TUN_IP, 'metric', '1', 'if', String(tunIfIndex)], log);
+async function setDefaultRouteViaTun(tunIfIndex, log, tunIp = TUN_IP) {
+  await run('route', ['add', '0.0.0.0', 'mask', '0.0.0.0', tunIp, 'metric', '1', 'if', String(tunIfIndex)], log);
 }
 
-async function clearDefaultRouteViaTun(log) {
+async function clearDefaultRouteViaTun(log, tunIp = TUN_IP) {
   try {
-    await run('route', ['delete', '0.0.0.0', 'mask', '0.0.0.0', TUN_IP], log);
+    await run('route', ['delete', '0.0.0.0', 'mask', '0.0.0.0', tunIp], log);
   } catch (err) {
     log && log(`(не критично) не удалось убрать маршрут по умолчанию: ${err.message}`);
   }

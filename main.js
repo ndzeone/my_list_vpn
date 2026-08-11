@@ -7,6 +7,7 @@ const elevation = require('./src/core/elevation');
 const coreManager = require('./src/core/coreManager');
 const profileStore = require('./src/store/profileStore');
 const accountStore = require('./src/store/accountStore');
+const settingsStore = require('./src/store/settingsStore');
 const parsers = require('./src/parsers');
 const subscription = require('./src/core/subscription');
 const updateChecker = require('./src/core/updateChecker');
@@ -287,6 +288,12 @@ ipcMain.handle('profiles:ping', async (evt, id) => {
     return null;
   }
 });
+
+// ---- Сетевые настройки TUN (DNS/IP/порт для vless-trojan) -------------
+
+ipcMain.handle('settings:networkGet', () => settingsStore.load());
+ipcMain.handle('settings:networkSave', (evt, patch) => settingsStore.save(patch));
+ipcMain.handle('settings:networkReset', () => settingsStore.reset());
 
 ipcMain.handle('core:status', () => coreManager.status());
 

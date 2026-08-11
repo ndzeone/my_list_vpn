@@ -14,8 +14,7 @@ const paths = require('../core/paths');
 const vless = require('../parsers/vless');
 const trojan = require('../parsers/trojan');
 const route = require('./routeHelper');
-
-const SOCKS_PORT = 12345;
+const settingsStore = require('../store/settingsStore');
 
 const LINK_KINDS = {
   vless: { parse: vless.parseVlessLink, buildConfig: vless.buildXrayConfig },
@@ -28,6 +27,10 @@ class XrayEngine {
     this.tunProc = null;
     this.bypassIp = null;
     this.tunIfIndex = null;
+    // IP TUN-адаптера, реально применённый при подключении — фиксируем на
+    // время сессии, чтобы отключение чистило маршрут тем же IP, даже если
+    // пользователь поменяет настройки сети, пока туннель активен.
+    this.activeTunIp = null;
   }
 
   get isRunning() {
@@ -40,8 +43,11 @@ class XrayEngine {
 
     const kind = LINK_KINDS[profile.type];
     if (!kind) throw new Error(`Неизвестный тип профиля для Xray-движка: ${profile.type}`);
+    const net = settingsStore.load();
+    this.activeTunIp = net.tunIp;
+
     const parsed = kind.parse(profile.raw);
-    const config = kind.buildConfig(parsed, { socksPort: SOCKS_PORT, logLevel: 'warning' });
+    const config = kind.buildConfig(parsed, { socksPort: net.socksPort, logLevel: 'warning' });
     const configPath = path.join(paths.getRunDir(), 'xray-config.json');
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
 
@@ -71,7 +77,7 @@ class XrayEngine {
     log('Запускаю tun2socks (создание TUN-адаптера)...');
     this.tunProc = spawn(
       paths.getTun2socksExe(),
-      ['-device', `tun://${route.TUN_NAME}`, '-proxy', `socks5://127.0.0.1:${SOCKS_PORT}`, '-loglevel', 'info'],
+      ['-device', `tun://${route.TUN_NAME}`, '-proxy', `socks5://127.0.0.1:${net.socksPort}`, '-loglevel', 'info'],
       { cwd: paths.getTun2socksDir(), windowsHide: true }
     );
     this._pipeLogs(this.tunProc, 'tun2socks', log);
@@ -80,18 +86,18 @@ class XrayEngine {
       this.tunProc = null;
     });
 
-    log('Настраиваю IP/DNS адаптера...');
-    this.tunIfIndex = await route.configureTunAdapter(log);
+    log(`Настраиваю IP/DNS адаптера (${net.tunIp}, DNS ${net.dns1}${net.dns2 ? ', ' + net.dns2 : ''})...`);
+    this.tunIfIndex = await route.configureTunAdapter(log, [net.dns1, net.dns2].filter(Boolean), net.tunIp);
 
     log('Направляю системный трафик через TUN...');
-    await route.setDefaultRouteViaTun(this.tunIfIndex, log);
+    await route.setDefaultRouteViaTun(this.tunIfIndex, log, net.tunIp);
 
     log('VLESS-туннель поднят.');
   }
 
   async stop({ onLog } = {}) {
     const log = (line) => onLog && onLog(line);
-    await route.clearDefaultRouteViaTun(log);
+    await route.clearDefaultRouteViaTun(log, this.activeTunIp || undefined);
     if (this.bypassIp) {
       await route.removeBypassRoute(this.bypassIp, log);
       this.bypassIp = null;
@@ -101,6 +107,7 @@ class XrayEngine {
     this.tunProc = null;
     this.xrayProc = null;
     this.tunIfIndex = null;
+    this.activeTunIp = null;
   }
 
   _kill(proc, name, log) {

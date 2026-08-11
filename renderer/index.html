@@ -123,6 +123,27 @@
       </div>
 
       <div class="settings-section">
+        <div class="settings-title">Сеть TUN (VLESS / Trojan)</div>
+        <p class="muted small">
+          Виртуальный сетевой адаптер и DNS для режима vless/trojan.
+          WireGuard/AmneziaWG эти настройки не используют — там IP/DNS берутся
+          из самого конфига. Меняйте только при конфликте с другой программой
+          (антивирус, другой VPN) — вступает в силу со следующего подключения.
+        </p>
+        <div class="net-settings-grid">
+          <label>DNS 1<input id="netDns1" type="text" placeholder="1.1.1.1" /></label>
+          <label>DNS 2<input id="netDns2" type="text" placeholder="1.0.0.1" /></label>
+          <label>IP TUN-адаптера<input id="netTunIp" type="text" placeholder="198.18.0.1" /></label>
+          <label>Локальный SOCKS-порт<input id="netSocksPort" type="text" placeholder="12345" /></label>
+        </div>
+        <div id="netSettingsError" class="modal-error hidden"></div>
+        <div class="net-settings-actions">
+          <button id="netSettingsSaveBtn" class="btn btn-primary btn-small">Сохранить</button>
+          <button id="netSettingsResetBtn" class="btn btn-ghost btn-small">Сбросить по умолчанию</button>
+        </div>
+      </div>
+
+      <div class="settings-section">
         <div class="settings-title">Движки туннеля</div>
         <p class="muted small">Xray-core — для vless://, AmneziaWG — для конфигов Amnezia и обычного WireGuard.</p>
 

@@ -453,6 +453,34 @@ html, body {
   transition: width 0.2s;
 }
 
+.net-settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 10px;
+}
+.net-settings-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.net-settings-grid input {
+  background: #0d0d0e;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 13px;
+}
+.net-settings-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+}
+
 .tag {
   display: inline-block;
   font-size: 11px;

@@ -20,6 +20,10 @@ contextBridge.exposeInMainWorld('api', {
   profilesRename: (id, name) => ipcRenderer.invoke('profiles:rename', { id, name }),
   profilesPing: (id) => ipcRenderer.invoke('profiles:ping', id),
 
+  networkSettingsGet: () => ipcRenderer.invoke('settings:networkGet'),
+  networkSettingsSave: (patch) => ipcRenderer.invoke('settings:networkSave', patch),
+  networkSettingsReset: () => ipcRenderer.invoke('settings:networkReset'),
+
   coreStatus: () => ipcRenderer.invoke('core:status'),
   coreInstallXrayStack: () => ipcRenderer.invoke('core:installXrayStack'),
   onCoreProgress: (cb) => {

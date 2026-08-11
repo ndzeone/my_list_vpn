@@ -62,6 +62,14 @@ const els = {
   settingsPanelBackdrop: el('settingsPanelBackdrop'),
   closeSettingsPanel: el('closeSettingsPanel'),
 
+  netDns1: el('netDns1'),
+  netDns2: el('netDns2'),
+  netTunIp: el('netTunIp'),
+  netSocksPort: el('netSocksPort'),
+  netSettingsError: el('netSettingsError'),
+  netSettingsSaveBtn: el('netSettingsSaveBtn'),
+  netSettingsResetBtn: el('netSettingsResetBtn'),
+
   xrayStatusText: el('xrayStatusText'),
   installXrayBtn: el('installXrayBtn'),
   xrayProgress: el('xrayProgress'),
@@ -256,6 +264,7 @@ function closeServerPanel() {
 async function openSettingsPanel() {
   els.settingsPanelBackdrop.classList.remove('hidden');
   await refreshCoreStatus();
+  await loadNetworkSettings();
 }
 function closeSettingsPanel() {
   els.settingsPanelBackdrop.classList.add('hidden');
@@ -288,6 +297,21 @@ async function refreshCoreStatus() {
   els.amneziaStatusText.textContent = status.amnezia
     ? 'Встроено, готово'
     : 'Не найдено — переустановите приложение';
+}
+
+// ---- Сетевые настройки TUN (DNS/IP/порт) -------------------------------
+
+function fillNetworkInputs(s) {
+  els.netDns1.value = s.dns1;
+  els.netDns2.value = s.dns2 || '';
+  els.netTunIp.value = s.tunIp;
+  els.netSocksPort.value = s.socksPort;
+}
+
+async function loadNetworkSettings() {
+  els.netSettingsError.classList.add('hidden');
+  const s = await window.api.networkSettingsGet();
+  fillNetworkInputs(s);
 }
 
 // ---- Модалка добавления ----------------------------------------------------
@@ -411,6 +435,33 @@ function setProgress(barEl, receivedTotal) {
   barEl.classList.remove('hidden');
   barEl.querySelector('.progress-fill').style.width = pct + '%';
 }
+
+els.netSettingsSaveBtn.addEventListener('click', async () => {
+  els.netSettingsError.classList.add('hidden');
+  els.netSettingsSaveBtn.disabled = true;
+  try {
+    const saved = await window.api.networkSettingsSave({
+      dns1: els.netDns1.value.trim(),
+      dns2: els.netDns2.value.trim(),
+      tunIp: els.netTunIp.value.trim(),
+      socksPort: els.netSocksPort.value.trim(),
+    });
+    fillNetworkInputs(saved);
+    appendLog('Сетевые настройки TUN сохранены — применятся при следующем подключении.');
+  } catch (err) {
+    els.netSettingsError.textContent = err.message || String(err);
+    els.netSettingsError.classList.remove('hidden');
+  } finally {
+    els.netSettingsSaveBtn.disabled = false;
+  }
+});
+
+els.netSettingsResetBtn.addEventListener('click', async () => {
+  els.netSettingsError.classList.add('hidden');
+  const defaults = await window.api.networkSettingsReset();
+  fillNetworkInputs(defaults);
+  appendLog('Сетевые настройки TUN сброшены по умолчанию.');
+});
 
 els.installXrayBtn.addEventListener('click', async () => {
   els.installXrayBtn.disabled = true;
