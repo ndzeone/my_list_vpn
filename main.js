@@ -13,13 +13,18 @@ const subscription = require('./src/core/subscription');
 const updateChecker = require('./src/core/updateChecker');
 const tunController = require('./src/engine/tunController');
 const pingHelper = require('./src/engine/pingHelper');
+const processCleanup = require('./src/core/processCleanup');
 
 // На части Windows-машин (обычно из-за антивируса или другого VPN/прокси-
 // клиента, перехватывающего сетевой стек через Winsock LSP) песочница
 // сетевого сервиса Chromium падает в цикл: "Network service crashed,
 // restarting service" — и окно вовсе не появляется. Это официально
-// задокументированный обходной путь для Electron на Windows.
-app.commandLine.appendSwitch('disable-features', 'NetworkServiceSandbox');
+// задокументированный обходной путь для Electron, но специфичен именно для
+// Windows-проблемы (Winsock LSP) — на Linux эта причина краша не встречается,
+// а урезать песочницу без нужды не стоит.
+if (process.platform === 'win32') {
+  app.commandLine.appendSwitch('disable-features', 'NetworkServiceSandbox');
+}
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -53,10 +58,11 @@ function send(channel, payload) {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 980,
-    height: 640,
-    minWidth: 760,
-    minHeight: 520,
+    width: 1040,
+    height: 680,
+    minWidth: 880,
+    minHeight: 560,
+    show: !settingsStore.load().startMinimized,
     backgroundColor: '#0a0a0b',
     autoHideMenuBar: true,
     icon: iconPath(),
@@ -72,10 +78,15 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
   mainWindow.on('close', (e) => {
-    if (!isQuitting) {
-      e.preventDefault();
-      mainWindow.hide();
+    if (isQuitting) return;
+    const behavior = settingsStore.load().closeBehavior;
+    if (behavior === 'exit') {
+      isQuitting = true;
+      app.quit();
+      return;
     }
+    e.preventDefault();
+    mainWindow.hide();
   });
 }
 
@@ -134,20 +145,23 @@ app.whenReady().then(async () => {
   createWindow();
   createTray();
 
+  // Подчищаем зомби-процессы xray.exe/tun2socks.exe от прошлого краша ДО
+  // того, как пользователь успеет нажать «Подключить» — иначе занятый ими
+  // порт/адаптер может подвесить первую попытку подключения (см.
+  // src/core/processCleanup.js).
+  processCleanup.killOwnedZombies((l) => send('vpn:log', l));
+
   if (!elevated) {
-    // Права администратора запрашиваются "по-настоящему" — через встроенный
-    // в собранный .exe манифест requestedExecutionLevel=requireAdministrator
-    // (build.win в package.json): Windows сама показывает UAC ДО того, как
-    // процесс вообще стартует, никакого кода для этого не нужно. Если этот
-    // блок вообще выполняется — значит, либо это неупакованный dev-режим
-    // (`npm start`, манифест не применяется), либо пользователь ранее
-    // отклонил UAC при установке. Автоматически перезапускать процесс через
-    // PowerShell/`Start-Process -Verb RunAs` мы больше не пытаемся — это не
-    // штатный способ и даёт пользователю лишний неожиданный UAC-попап поверх
-    // уже открытого окна. Вместо этого просто показываем баннер с кнопкой:
-    // повышение выполняется только по явному клику пользователя.
-    console.warn('[main] запущено без прав администратора — TUN-режим будет недоступен, пока пользователь не подтвердит повышение вручную.');
-    send('vpn:log', 'Приложение запущено без прав администратора. Для TUN-режима нажмите «Перезапустить от администратора» в баннере наверху, либо (в dev-режиме) запустите терминал от имени администратора и выполните npm start.');
+    // Манифест собранного .exe специально НЕ требует администратора
+    // (build.win.requestedExecutionLevel=asInvoker в package.json) — это
+    // осознанный выбор: режим PROXY работает вообще без прав администратора,
+    // и заставлять пользователя проходить UAC при каждом запуске приложения
+    // ради этого было бы неверно. Права нужны только для TUN-режима, и
+    // получить их можно по явному клику на кнопку «Перезапустить от
+    // администратора» в баннере — она вызывает Start-Process -Verb RunAs
+    // (см. src/core/elevation.js), а не автоматически при старте.
+    console.warn('[main] запущено без прав администратора — доступен режим PROXY, для TUN нужно подтвердить повышение вручную.');
+    send('vpn:log', 'Приложение запущено без прав администратора. Режим PROXY доступен сразу, а для TUN нажмите «Перезапустить от администратора» в баннере наверху.');
   }
 
   app.on('activate', () => {
@@ -186,7 +200,7 @@ app.on('second-instance', () => {
 // IPC
 // ---------------------------------------------------------------------
 
-ipcMain.handle('app:info', () => ({ name: 'My List VPN', version: app.getVersion() }));
+ipcMain.handle('app:info', () => ({ name: 'My List VPN', version: app.getVersion(), platform: process.platform }));
 
 ipcMain.handle('update:check', () => updateChecker.checkForUpdate(app.getVersion()));
 
@@ -289,24 +303,41 @@ ipcMain.handle('profiles:ping', async (evt, id) => {
   }
 });
 
-// ---- Сетевые настройки TUN (DNS/IP/порт для vless-trojan) -------------
+// ---- Настройки (сеть TUN/PROXY, поведение приложения) -----------------
 
 ipcMain.handle('settings:networkGet', () => settingsStore.load());
 ipcMain.handle('settings:networkSave', (evt, patch) => settingsStore.save(patch));
 ipcMain.handle('settings:networkReset', () => settingsStore.reset());
 
+ipcMain.handle('settings:autostartGet', () => app.getLoginItemSettings().openAtLogin);
+ipcMain.handle('settings:autostartSet', (evt, enabled) => {
+  app.setLoginItemSettings({ openAtLogin: !!enabled });
+  settingsStore.save({ autostart: !!enabled });
+  return !!enabled;
+});
+
+ipcMain.handle('settings:openUserDataDir', () => shell.openPath(paths.getUserDataDir()));
+
 ipcMain.handle('core:status', () => coreManager.status());
 
 ipcMain.handle('core:installXrayStack', async () => {
-  if (!elevated) throw new Error('Нужны права администратора. Перезапустите приложение от имени администратора.');
+  // Скачивание и распаковка xray.exe/tun2socks.exe/wintun.dll идёт в
+  // userData — обычную пользовательскую папку, права администратора для
+  // этого не нужны (нужны только позже, при создании TUN-адаптера в
+  // xrayEngine.startTun). Режим PROXY использует тот же движок и должен
+  // ставиться без UAC — иначе PROXY перестаёт быть режимом "без администратора".
   await coreManager.installXrayStack((progress) => send('core:progress', progress));
   return coreManager.status();
 });
 
-ipcMain.handle('vpn:connect', async (evt, id) => {
-  if (!elevated) throw new Error('Нужны права администратора для TUN-режима. Перезапустите приложение от имени администратора.');
+ipcMain.handle('vpn:connect', async (evt, { id, mode } = {}) => {
+  // Права администратора нужны только для TUN (создание адаптера, правка
+  // маршрутов) — режим PROXY работает и без них.
+  if (mode !== 'proxy' && !elevated) {
+    throw new Error('Нужны права администратора для TUN-режима. Перезапустите приложение от имени администратора, либо выберите режим PROXY.');
+  }
   const key = requireUnlocked();
-  await tunController.connect(id, key, {
+  await tunController.connect(id, key, mode, {
     onLog: (l) => send('vpn:log', l),
     onState: (s) => {
       send('vpn:state', s);
@@ -318,6 +349,17 @@ ipcMain.handle('vpn:connect', async (evt, id) => {
 
 ipcMain.handle('vpn:disconnect', async () => {
   await tunController.disconnect({
+    onLog: (l) => send('vpn:log', l),
+    onState: (s) => {
+      send('vpn:state', s);
+      rebuildTrayMenu();
+    },
+  });
+  return tunController.getStatus();
+});
+
+ipcMain.handle('vpn:forceReset', async () => {
+  await tunController.forceReset({
     onLog: (l) => send('vpn:log', l),
     onState: (s) => {
       send('vpn:state', s);

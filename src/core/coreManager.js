@@ -15,12 +15,23 @@
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const AdmZip = require('adm-zip');
 
 const paths = require('./paths');
 
+const IS_WIN = process.platform === 'win32';
 const UA = { 'User-Agent': 'My-List-VPN (github release fetcher)' };
 const WINTUN_URL = 'https://www.wintun.net/builds/wintun-0.14.1.zip';
+
+// Имена ассетов в GitHub Releases отличаются по платформе — сборки уже
+// готовые для обеих ОС существуют в апстриме (Xray-core, xjasonlyu/tun2socks),
+// здесь только выбираем нужный файл. Намеренно не выносится в src/platform/
+// (см. план) — coreManager.js не должен зависеть от src/platform, чтобы не
+// возникло цикла require с platform/win/wgBackend.js (которому, наоборот,
+// нужен coreManager.findAmneziaExe()).
+const XRAY_ASSET_NAME = IS_WIN ? 'Xray-windows-64.zip' : 'Xray-linux-64.zip';
+const TUN2SOCKS_ASSET_NAME = IS_WIN ? 'tun2socks-windows-amd64.zip' : 'tun2socks-linux-amd64.zip';
 
 function httpGetJson(url) {
   return new Promise((resolve, reject) => {
@@ -128,10 +139,43 @@ function amneziaCandidatePaths() {
 }
 
 function findAmneziaExe() {
+  if (!IS_WIN) return null; // на Linux нет единого бинарника, см. findLinuxWgTools()
   return amneziaCandidatePaths().find((p) => fs.existsSync(p)) || null;
 }
 
+function commandExistsOnPath(cmd) {
+  try {
+    // `which` есть на любом Linux из coreutils — то же самое, чем позже
+    // реально воспользуется elevation.runPrivileged() при подключении.
+    execFileSync('which', [cmd], { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] });
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
+ * На Linux нет вшитого бинарника — используются штатные wg-quick (обычный
+ * WireGuard, wireguard-tools из репозиториев Fedora) и awg-quick (AmneziaWG,
+ * из COPR, см. README). Оба опциональны по отдельности: без awg-quick можно
+ * подключать обычные .conf, без него — только они.
+ */
+function findLinuxWgTools() {
+  return { wgQuick: commandExistsOnPath('wg-quick'), awgQuick: commandExistsOnPath('awg-quick') };
+}
+
 function status() {
+  if (!IS_WIN) {
+    const wg = findLinuxWgTools();
+    return {
+      xray: fs.existsSync(paths.getXrayExe()),
+      tun2socks: fs.existsSync(paths.getTun2socksExe()), // wintun.dll на Linux не нужен
+      amnezia: wg.wgQuick || wg.awgQuick,
+      amneziaPath: null,
+      wgQuickAvailable: wg.wgQuick,
+      awgQuickAvailable: wg.awgQuick,
+    };
+  }
   return {
     xray: fs.existsSync(paths.getXrayExe()),
     tun2socks: fs.existsSync(paths.getTun2socksExe()) && fs.existsSync(paths.getWintunDll()),
@@ -144,7 +188,7 @@ function status() {
 
 async function installXray(onProgress) {
   onProgress && onProgress({ stage: 'xray', phase: 'lookup' });
-  const asset = await getLatestAsset('XTLS/Xray-core', (n) => n === 'Xray-windows-64.zip');
+  const asset = await getLatestAsset('XTLS/Xray-core', (n) => n === XRAY_ASSET_NAME);
   const zipPath = path.join(paths.getDownloadsDir(), asset.name);
   onProgress && onProgress({ stage: 'xray', phase: 'download', name: asset.name });
   await downloadFile(asset.url, zipPath, (received, total) =>
@@ -153,18 +197,20 @@ async function installXray(onProgress) {
   onProgress && onProgress({ stage: 'xray', phase: 'extract' });
   extractZip(zipPath, paths.getXrayDir());
   if (!fs.existsSync(paths.getXrayExe())) {
-    const found = findFileRecursive(paths.getXrayDir(), (n) => n.toLowerCase() === 'xray.exe');
-    if (!found) throw new Error('xray.exe не найден внутри архива после распаковки.');
+    const exeName = IS_WIN ? 'xray.exe' : 'xray';
+    const found = findFileRecursive(paths.getXrayDir(), (n) => n.toLowerCase() === exeName);
+    if (!found) throw new Error(`${exeName} не найден внутри архива после распаковки.`);
     fs.copyFileSync(found, paths.getXrayExe());
+    if (!IS_WIN) fs.chmodSync(paths.getXrayExe(), 0o755);
   }
   onProgress && onProgress({ stage: 'xray', phase: 'done' });
 }
 
-// ---- Установка: tun2socks + wintun.dll -------------------------------
+// ---- Установка: tun2socks (+ wintun.dll на Windows) -------------------
 
 async function installTun2socks(onProgress) {
   onProgress && onProgress({ stage: 'tun2socks', phase: 'lookup' });
-  const asset = await getLatestAsset('xjasonlyu/tun2socks', (n) => n === 'tun2socks-windows-amd64.zip');
+  const asset = await getLatestAsset('xjasonlyu/tun2socks', (n) => n === TUN2SOCKS_ASSET_NAME);
   const zipPath = path.join(paths.getDownloadsDir(), asset.name);
   onProgress && onProgress({ stage: 'tun2socks', phase: 'download', name: asset.name });
   await downloadFile(asset.url, zipPath, (received, total) =>
@@ -172,11 +218,20 @@ async function installTun2socks(onProgress) {
   );
   onProgress && onProgress({ stage: 'tun2socks', phase: 'extract' });
   extractZip(zipPath, paths.getTun2socksDir());
-  const foundExe = findFileRecursive(paths.getTun2socksDir(), (n) => /^tun2socks.*\.exe$/i.test(n));
-  if (!foundExe) throw new Error('tun2socks*.exe не найден внутри архива после распаковки.');
+  const exeMatcher = IS_WIN ? (n) => /^tun2socks.*\.exe$/i.test(n) : (n) => /^tun2socks/i.test(n) && !/\.exe$/i.test(n);
+  const foundExe = findFileRecursive(paths.getTun2socksDir(), exeMatcher);
+  if (!foundExe) throw new Error('tun2socks не найден внутри архива после распаковки.');
   if (foundExe !== paths.getTun2socksExe()) fs.copyFileSync(foundExe, paths.getTun2socksExe());
+  if (!IS_WIN) fs.chmodSync(paths.getTun2socksExe(), 0o755);
 
-  // wintun.dll
+  if (!IS_WIN) {
+    // На Linux TUN даёт ядро (/dev/net/tun) — отдельного драйвера-адаптера,
+    // как wintun.dll на Windows, не требуется.
+    onProgress && onProgress({ stage: 'tun2socks', phase: 'done' });
+    return;
+  }
+
+  // wintun.dll (только Windows)
   onProgress && onProgress({ stage: 'wintun', phase: 'download' });
   const wintunZip = path.join(paths.getDownloadsDir(), 'wintun.zip');
   await downloadFile(WINTUN_URL, wintunZip, (received, total) =>

@@ -71,6 +71,88 @@ function sh(cmd, args) {
   return execFileSync(cmd, args, { cwd: ROOT, encoding: 'utf8' }).trim();
 }
 
+// ---- Автогенерация красивого описания релиза из git-коммитов ------------
+// История проекта не в формате Conventional Commits — коммиты выглядят как
+// "vX.Y.Z: <что изменилось>" или "<Глагол>: <что>" (см. `git log`), поэтому
+// вместо строгого парсинга префиксов используем ключевые слова по всему
+// тексту сообщения, а буллитом берём часть после первого ":" (если она есть
+// и это не похоже на "Merge branch ...:" без содержательного текста).
+
+function findPreviousTag(currentTag) {
+  try {
+    const tags = sh('git', ['tag', '--sort=-creatordate']).split('\n').map((s) => s.trim()).filter(Boolean);
+    return tags.find((t) => t !== currentTag) || null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function collectCommitSubjects(prevTag) {
+  const range = prevTag ? `${prevTag}..HEAD` : null;
+  const args = ['log', '--pretty=format:%s'];
+  if (range) args.push(range);
+  else args.push('-n', '30'); // первый релиз без прошлого тега — не тащим всю историю
+  let out;
+  try {
+    out = sh('git', args);
+  } catch (err) {
+    return [];
+  }
+  return out.split('\n').map((s) => s.trim()).filter(Boolean);
+}
+
+function classify(subject) {
+  const s = subject.toLowerCase();
+  if (/\bfix\b|фикс|исправ|бага?|bug|ошибк|hang|завис/.test(s)) return 'fix';
+  if (/\bfeat\b|добав|новая?|новое|новый|new\b|\badd(ed)?\b|поддержк/.test(s)) return 'feat';
+  return 'other';
+}
+
+function bulletText(subject) {
+  const idx = subject.indexOf(':');
+  // Берём текст после ":" только если префикс короткий и похож на тег/глагол
+  // ("v1.1.1", "Add", "Merge"), а не на случайное двоеточие в описании.
+  if (idx > 0 && idx < 24) {
+    const rest = subject.slice(idx + 1).trim();
+    if (rest) return rest;
+  }
+  return subject;
+}
+
+function capitalize(s) {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
+
+function buildReleaseNotes(version, tag, repo) {
+  const prevTag = findPreviousTag(tag);
+  const subjects = collectCommitSubjects(prevTag);
+
+  const groups = { feat: [], fix: [], other: [] };
+  for (const subject of subjects) {
+    // Пропускаем служебные merge-коммиты без содержательного текста.
+    if (/^merge (pull request|branch) /i.test(subject)) continue;
+    groups[classify(subject)].push(capitalize(bulletText(subject)));
+  }
+
+  const lines = [`## My List VPN v${version}`, ''];
+  if (groups.feat.length) {
+    lines.push('### ✨ Новое', ...groups.feat.map((b) => `- ${b}`), '');
+  }
+  if (groups.fix.length) {
+    lines.push('### 🐛 Исправления', ...groups.fix.map((b) => `- ${b}`), '');
+  }
+  if (groups.other.length) {
+    lines.push('### 🔧 Прочее', ...groups.other.map((b) => `- ${b}`), '');
+  }
+  if (!groups.feat.length && !groups.fix.length && !groups.other.length) {
+    lines.push(`Публикация версии ${version}.`, '');
+  }
+  if (prevTag) {
+    lines.push(`**Полный список изменений:** https://github.com/${repo}/compare/${prevTag}...${tag}`);
+  }
+  return lines.join('\n').trim();
+}
+
 async function main() {
   const token = readToken();
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
@@ -103,15 +185,22 @@ async function main() {
   console.log(`Тег ${tag} запушен.`);
 
   // 2. GitHub Release (создаём или переиспользуем, если уже есть с этим тегом).
+  const releaseNotes = buildReleaseNotes(version, tag, REPO);
+  console.log('--- Сгенерированное описание релиза ---\n' + releaseNotes + '\n----------------------------------------');
+
   let release;
   try {
     release = await apiRequest('GET', `https://api.github.com/repos/${REPO}/releases/tags/${tag}`, token);
-    console.log(`Релиз ${tag} уже существует (id ${release.id}), дозаливаю ассет.`);
+    console.log(`Релиз ${tag} уже существует (id ${release.id}), обновляю описание и дозаливаю ассет.`);
+    release = await apiRequest('PATCH', `https://api.github.com/repos/${REPO}/releases/${release.id}`, token, {
+      name: `My List VPN ${version}`,
+      body: releaseNotes,
+    });
   } catch (err) {
     release = await apiRequest('POST', `https://api.github.com/repos/${REPO}/releases`, token, {
       tag_name: tag,
       name: `My List VPN ${version}`,
-      body: `Автоматическая публикация версии ${version}.`,
+      body: releaseNotes,
       draft: false,
       prerelease: false,
     });

@@ -62,26 +62,37 @@ function getAccountFile() {
   return path.join(getUserDataDir(), 'account.json');
 }
 
+const IS_WIN = process.platform === 'win32';
+
 function getXrayExe() {
-  return path.join(getXrayDir(), 'xray.exe');
+  return path.join(getXrayDir(), IS_WIN ? 'xray.exe' : 'xray');
 }
 
 function getTun2socksExe() {
-  return path.join(getTun2socksDir(), 'tun2socks.exe');
+  return path.join(getTun2socksDir(), IS_WIN ? 'tun2socks.exe' : 'tun2socks');
 }
 
 function getWintunDll() {
+  // wintun.dll нужен только на Windows (tun2socks грузит его как драйвер
+  // адаптера) — на Linux TUN даёт само ядро через /dev/net/tun, скачивать
+  // и проверять здесь нечего.
   return path.join(getTun2socksDir(), 'wintun.dll');
 }
 
 /**
- * AmneziaWG вшит прямо в приложение (см. `build.extraResources` в
- * package.json) — отдельно устанавливать и скачивать его больше не нужно.
- * В собранном виде файлы лежат в `<installDir>/resources/amneziawg/`
- * (electron-builder копирует их туда из `resources/amneziawg/` проекта);
- * в dev-режиме (`npm start`, unpacked) — там же в исходниках проекта.
+ * AmneziaWG вшит прямо в приложение только на Windows (см.
+ * `build.extraResources` в package.json) — отдельно устанавливать и
+ * скачивать его там не нужно. В собранном виде файлы лежат в
+ * `<installDir>/resources/amneziawg/` (electron-builder копирует их туда из
+ * `resources/amneziawg/` проекта); в dev-режиме (`npm start`, unpacked) —
+ * там же в исходниках проекта.
+ *
+ * На Linux ничего не бандлится — используются штатные `wg-quick`/
+ * `awg-quick` из системы (см. src/platform/linux/wgBackend.js), поэтому обе
+ * функции ниже возвращают null.
  */
 function getBundledAmneziaDir() {
+  if (!IS_WIN) return null;
   // app.isPackaged читается статически из самого объекта app, доступен даже
   // до app.whenReady()/initPaths() — не полагаемся здесь на appRef.
   const { app } = require('electron');
@@ -92,7 +103,8 @@ function getBundledAmneziaDir() {
 }
 
 function getBundledAmneziaExe() {
-  return path.join(getBundledAmneziaDir(), 'amneziawg.exe');
+  const dir = getBundledAmneziaDir();
+  return dir ? path.join(dir, 'amneziawg.exe') : null;
 }
 
 module.exports = {

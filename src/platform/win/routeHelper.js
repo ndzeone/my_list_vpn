@@ -13,15 +13,30 @@ const TUN_NAME = 'MyListVPN';
 const TUN_IP = '198.18.0.1';
 const TUN_MASK = '255.255.255.0';
 
-function run(cmd, args, log) {
+// Таймаут на одну команду. Без него зависший powershell/netsh/route (например,
+// из-за конфликта с антивирусом или уже занятого адаптера) держит
+// tunController в состоянии "connecting" НАВСЕГДА — именно так пользователь
+// ловит ошибку "Уже есть активное или незавершённое подключение": первая
+// попытка подключения зависла и никогда не завершается ни успехом, ни ошибкой.
+const CMD_TIMEOUT_MS = 12000;
+
+function run(cmd, args, log, timeoutMs = CMD_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     log && log(`> ${cmd} ${args.join(' ')}`);
-    execFile(cmd, args, { windowsHide: true }, (err, stdout, stderr) => {
+    const child = execFile(cmd, args, { windowsHide: true, timeout: timeoutMs, killSignal: 'SIGKILL' }, (err, stdout, stderr) => {
       if (stdout && log) log(stdout.trim());
       if (stderr && log) log(stderr.trim());
-      if (err) reject(new Error(`${cmd} завершился с ошибкой: ${err.message}`));
-      else resolve(stdout);
+      if (err) {
+        if (err.killed || err.signal) {
+          reject(new Error(`${cmd} не ответил за ${Math.round(timeoutMs / 1000)}с и был принудительно остановлен.`));
+        } else {
+          reject(new Error(`${cmd} завершился с ошибкой: ${err.message}`));
+        }
+      } else {
+        resolve(stdout);
+      }
     });
+    child.on('error', reject);
   });
 }
 
@@ -45,7 +60,9 @@ async function getDefaultGateway(log) {
 async function getAdapterIndex(name, log, retries = 20, delayMs = 500) {
   const psScript = `(Get-NetAdapter -Name '${name}' -ErrorAction SilentlyContinue | Select-Object -Expand ifIndex)`;
   for (let i = 0; i < retries; i++) {
-    const out = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psScript], log);
+    // Короткий таймаут на опрос — сам факт зависшего powershell не должен
+    // раздувать общее ожидание адаптера сверх разумного.
+    const out = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psScript], log, 4000);
     const idx = parseInt(out.trim(), 10);
     if (!Number.isNaN(idx)) return idx;
     await new Promise((r) => setTimeout(r, delayMs));

@@ -50,18 +50,32 @@ function buildXrayConfig(parsed, opts) {
   const socksPort = opts.socksPort;
   const flow = parsed.params.flow || undefined;
 
+  const inbounds = [
+    {
+      tag: 'socks-in',
+      listen: '127.0.0.1',
+      port: socksPort,
+      protocol: 'socks',
+      settings: { auth: 'noauth', udp: true },
+      sniffing: { enabled: true, destOverride: ['http', 'tls'] },
+    },
+  ];
+  // HTTP-inbound добавляется только для режима PROXY (opts.httpPort задан) —
+  // в TUN-режиме этого не нужно, трафик и так идёт через SOCKS+tun2socks.
+  if (opts.httpPort) {
+    inbounds.push({
+      tag: 'http-in',
+      listen: '127.0.0.1',
+      port: opts.httpPort,
+      protocol: 'http',
+      settings: {},
+      sniffing: { enabled: true, destOverride: ['http', 'tls'] },
+    });
+  }
+
   return {
     log: { loglevel: opts.logLevel || 'warning' },
-    inbounds: [
-      {
-        tag: 'socks-in',
-        listen: '127.0.0.1',
-        port: socksPort,
-        protocol: 'socks',
-        settings: { auth: 'noauth', udp: true },
-        sniffing: { enabled: true, destOverride: ['http', 'tls'] },
-      },
-    ],
+    inbounds,
     outbounds: [
       {
         tag: 'proxy',

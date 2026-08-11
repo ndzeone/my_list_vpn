@@ -1,13 +1,20 @@
 'use strict';
 
+const UPDATE_INTERVAL_OPTIONS = [1, 3, 6, 12, 24];
+
 const state = {
   profiles: [],
   selectedId: null,
-  vpn: { state: 'disconnected', profileId: null, connectedSince: null },
+  vpn: { state: 'disconnected', profileId: null, mode: null, connectedSince: null },
+  mode: 'tun', // выбранный на главном экране режим TUN/PROXY (до подключения)
   logs: [],
   elevated: true,
+  platform: null, // 'win32' | 'linux' — заполняется из app:info в afterUnlock()
   pings: {}, // id -> ms|null
   updateInfo: null,
+  settings: null, // последняя загруженная копия network-settings.json (сеть + поведение)
+  view: 'home',
+  settingsTab: 'general',
 };
 
 const el = (id) => document.getElementById(id);
@@ -38,12 +45,23 @@ const els = {
   updateBadge: el('updateBadge'),
   updateBadgeText: el('updateBadgeText'),
 
-  settingsBtn: el('settingsBtn'),
+  navHome: el('navHome'),
+  navServers: el('navServers'),
+  navSettings: el('navSettings'),
+  railHomeDot: el('railHomeDot'),
+  viewHome: el('viewHome'),
+  viewServers: el('viewServers'),
+  viewSettings: el('viewSettings'),
+
+  modeSwitch: el('modeSwitch'),
+  modeTunBtn: el('modeTunBtn'),
+  modeProxyBtn: el('modeProxyBtn'),
 
   powerBtn: el('powerBtn'),
   ringPulse: el('ringPulse'),
   statusText: el('statusText'),
   statusSub: el('statusSub'),
+  cancelConnectBtn: el('cancelConnectBtn'),
 
   serverCard: el('serverCard'),
   serverTypeBadge: el('serverTypeBadge'),
@@ -54,18 +72,26 @@ const els = {
   logOutput: el('logOutput'),
   clearLogBtn: el('clearLogBtn'),
 
-  serverPanelBackdrop: el('serverPanelBackdrop'),
-  closeServerPanel: el('closeServerPanel'),
   addProfileBtn: el('addProfileBtn'),
   profileList: el('profileList'),
 
-  settingsPanelBackdrop: el('settingsPanelBackdrop'),
-  closeSettingsPanel: el('closeSettingsPanel'),
+  settingsTabs: el('settingsTabs'),
+
+  defaultModeSeg: el('defaultModeSeg'),
+  chkAutostart: el('chkAutostart'),
+  chkAutoConnect: el('chkAutoConnect'),
+  chkStartMinimized: el('chkStartMinimized'),
+  closeBehaviorSeg: el('closeBehaviorSeg'),
+  updateIntervalSelect: el('updateIntervalSelect'),
 
   netDns1: el('netDns1'),
   netDns2: el('netDns2'),
   netTunIp: el('netTunIp'),
   netSocksPort: el('netSocksPort'),
+  netHttpPort: el('netHttpPort'),
+  chkAutoSystemProxy: el('chkAutoSystemProxy'),
+  autoSystemProxyRow: el('autoSystemProxyRow'),
+  linuxProxyHint: el('linuxProxyHint'),
   netSettingsError: el('netSettingsError'),
   netSettingsSaveBtn: el('netSettingsSaveBtn'),
   netSettingsResetBtn: el('netSettingsResetBtn'),
@@ -75,6 +101,9 @@ const els = {
   xrayProgress: el('xrayProgress'),
   amneziaStatusText: el('amneziaStatusText'),
   versionText: el('versionText'),
+  aboutVersionText: el('aboutVersionText'),
+  forceResetBtn: el('forceResetBtn'),
+  openUserDataBtn: el('openUserDataBtn'),
 
   modalBackdrop: el('modalBackdrop'),
   modalName: el('modalName'),
@@ -82,6 +111,8 @@ const els = {
   modalError: el('modalError'),
   modalCancel: el('modalCancel'),
   modalSave: el('modalSave'),
+
+  toastContainer: el('toastContainer'),
 };
 
 let uptimeTimer = null;
@@ -125,10 +156,74 @@ function fmtPing(ms) {
   return { text: `${ms} мс`, cls: 'down' };
 }
 
+// ---- Toasts (заменяют alert() для некритичных ошибок) --------------------
+
+function showToast(message, type = 'info', timeoutMs = 4500) {
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.textContent = message;
+  els.toastContainer.appendChild(t);
+  setTimeout(() => t.remove(), timeoutMs);
+}
+
+// ---- Навигация: рейл + вкладки настроек -----------------------------------
+
+function switchView(view) {
+  state.view = view;
+  els.viewHome.classList.toggle('hidden', view !== 'home');
+  els.viewServers.classList.toggle('hidden', view !== 'servers');
+  els.viewSettings.classList.toggle('hidden', view !== 'settings');
+  els.navHome.classList.toggle('active', view === 'home');
+  els.navServers.classList.toggle('active', view === 'servers');
+  els.navSettings.classList.toggle('active', view === 'settings');
+  if (view === 'settings') openSettingsView();
+}
+
+[els.navHome, els.navServers, els.navSettings].forEach((btn) => {
+  btn.addEventListener('click', () => switchView(btn.dataset.view));
+});
+
+function switchSettingsTab(tab) {
+  state.settingsTab = tab;
+  document.querySelectorAll('#settingsTabs .tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.tab-panel').forEach((p) => p.classList.toggle('hidden', p.dataset.tabPanel !== tab));
+}
+els.settingsTabs.addEventListener('click', (e) => {
+  const btn = e.target.closest('.tab-btn');
+  if (btn) switchSettingsTab(btn.dataset.tab);
+});
+
+async function openSettingsView() {
+  switchSettingsTab(state.settingsTab);
+  await refreshCoreStatus();
+  await loadAppSettings();
+  await refreshAccountBadge();
+  els.chkAutostart.checked = await window.api.autostartGet();
+}
+
+// ---- Режим TUN/PROXY (главный экран) ---------------------------------------
+
+function updateModeAvailability() {
+  const p = currentProfile();
+  const proxyDisabled = !!p && p.type === 'wireguard';
+  els.modeProxyBtn.disabled = proxyDisabled;
+  els.modeProxyBtn.title = proxyDisabled ? 'WireGuard/AmneziaWG поддерживает только режим TUN' : '';
+  if (proxyDisabled && state.mode === 'proxy') setMode('tun');
+}
+
+function setMode(mode) {
+  state.mode = mode;
+  els.modeTunBtn.classList.toggle('active', mode === 'tun');
+  els.modeProxyBtn.classList.toggle('active', mode === 'proxy');
+}
+els.modeTunBtn.addEventListener('click', () => setMode('tun'));
+els.modeProxyBtn.addEventListener('click', () => setMode('proxy'));
+
 // ---- Рендер верхней карточки (главный экран) --------------------------
 
 function renderServerCard() {
   const p = currentProfile();
+  updateModeAvailability();
   if (!p) {
     els.serverTypeBadge.textContent = '+';
     els.serverCardName.textContent = 'Нет добавленных серверов';
@@ -164,21 +259,25 @@ function renderPower() {
   const p = currentProfile();
   const isThisActive = p && state.vpn.profileId === p.id;
   const s = isThisActive ? state.vpn.state : 'disconnected';
+  const activeMode = isThisActive ? state.vpn.mode : null;
 
   els.powerBtn.className = 'power-btn';
   els.ringPulse.classList.remove('active');
   els.powerBtn.disabled = false;
+  els.cancelConnectBtn.classList.add('hidden');
+  els.modeTunBtn.disabled = false;
 
   if (s === 'connected') {
     els.powerBtn.classList.add('connected');
     els.statusText.textContent = 'Подключено';
-    els.statusSub.textContent = '';
+    els.statusSub.textContent = activeMode === 'proxy' ? 'Режим PROXY — локальный прокси активен' : '';
   } else if (s === 'connecting') {
     els.powerBtn.classList.add('connecting');
     els.ringPulse.classList.add('active');
     els.statusText.textContent = 'Подключение…';
-    els.statusSub.textContent = 'Настраиваю TUN-адаптер и маршруты';
+    els.statusSub.textContent = state.mode === 'proxy' ? 'Поднимаю локальный прокси' : 'Настраиваю TUN-адаптер и маршруты';
     els.powerBtn.disabled = true;
+    els.cancelConnectBtn.classList.remove('hidden');
   } else if (s === 'disconnecting') {
     els.ringPulse.classList.add('active');
     els.statusText.textContent = 'Отключение…';
@@ -193,6 +292,8 @@ function renderPower() {
     if (!p) els.powerBtn.disabled = true;
   }
 
+  els.railHomeDot.classList.toggle('hidden', state.vpn.state !== 'connected');
+
   clearInterval(uptimeTimer);
   if (s === 'connected' && state.vpn.connectedSince) {
     const tick = () => (els.statusSub.textContent = fmtUptime(Date.now() - state.vpn.connectedSince));
@@ -201,9 +302,13 @@ function renderPower() {
   }
 }
 
-// ---- Список серверов (панель) ------------------------------------------
+// ---- Список серверов -------------------------------------------------
 
 function renderProfileList() {
+  if (!state.profiles.length) {
+    els.profileList.innerHTML = '<div class="empty-state">Пока нет ни одного сервера — нажмите «Добавить конфиг».</div>';
+    return;
+  }
   els.profileList.innerHTML = '';
   for (const p of state.profiles) {
     const item = document.createElement('div');
@@ -222,7 +327,7 @@ function renderProfileList() {
     item.addEventListener('click', (e) => {
       if (e.target.closest('[data-act]')) return;
       selectProfile(p.id);
-      closeServerPanel();
+      switchView('home');
     });
     item.querySelector('[data-act="rename"]').addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -253,23 +358,6 @@ function selectProfile(id) {
   refreshPing(id);
 }
 
-// ---- Панели --------------------------------------------------------------
-
-function openServerPanel() {
-  els.serverPanelBackdrop.classList.remove('hidden');
-}
-function closeServerPanel() {
-  els.serverPanelBackdrop.classList.add('hidden');
-}
-async function openSettingsPanel() {
-  els.settingsPanelBackdrop.classList.remove('hidden');
-  await refreshCoreStatus();
-  await loadNetworkSettings();
-}
-function closeSettingsPanel() {
-  els.settingsPanelBackdrop.classList.add('hidden');
-}
-
 function appendLog(line) {
   state.logs.push(line);
   if (state.logs.length > 500) state.logs.shift();
@@ -294,25 +382,166 @@ async function refreshCoreStatus() {
   els.xrayStatusText.textContent = xrayOk ? 'Установлен и готов' : 'Не установлен';
   els.installXrayBtn.textContent = xrayOk ? 'Переустановить' : 'Установить';
 
-  els.amneziaStatusText.textContent = status.amnezia
-    ? 'Встроено, готово'
-    : 'Не найдено — переустановите приложение';
+  if (state.platform === 'win32') {
+    els.amneziaStatusText.textContent = status.amnezia
+      ? 'Встроено, готово'
+      : 'Не найдено — переустановите приложение';
+  } else {
+    // На Linux нет вшитого бинарника — статус собирается из наличия
+    // системных wg-quick/awg-quick (см. src/core/coreManager.js).
+    const parts = [];
+    parts.push(status.wgQuickAvailable ? 'wg-quick: есть' : 'wg-quick: не найден (sudo dnf install wireguard-tools)');
+    parts.push(status.awgQuickAvailable ? 'awg-quick: есть' : 'awg-quick: не найден (см. README — установка через COPR)');
+    els.amneziaStatusText.textContent = parts.join(' · ');
+  }
 }
 
-// ---- Сетевые настройки TUN (DNS/IP/порт) -------------------------------
+// ---- Настройки (сеть TUN/PROXY + поведение приложения) --------------------
 
-function fillNetworkInputs(s) {
+function fillNetworkTab(s) {
   els.netDns1.value = s.dns1;
   els.netDns2.value = s.dns2 || '';
   els.netTunIp.value = s.tunIp;
   els.netSocksPort.value = s.socksPort;
+  els.netHttpPort.value = s.httpPort;
+  els.chkAutoSystemProxy.checked = !!s.autoSystemProxy;
 }
 
-async function loadNetworkSettings() {
+function setSegActive(container, value) {
+  container.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('active', b.dataset.value === value));
+}
+
+function fillGeneralTab(s) {
+  setSegActive(els.defaultModeSeg, s.defaultMode);
+  setSegActive(els.closeBehaviorSeg, s.closeBehavior);
+  els.chkAutoConnect.checked = !!s.autoConnectLast;
+  els.chkStartMinimized.checked = !!s.startMinimized;
+  els.updateIntervalSelect.value = String(s.updateIntervalHours);
+}
+
+async function loadAppSettings() {
   els.netSettingsError.classList.add('hidden');
   const s = await window.api.networkSettingsGet();
-  fillNetworkInputs(s);
+  state.settings = s;
+  fillNetworkTab(s);
+  fillGeneralTab(s);
+  setMode(s.defaultMode === 'proxy' ? 'proxy' : 'tun');
+  return s;
 }
+
+if (!els.updateIntervalSelect.options.length) {
+  for (const h of UPDATE_INTERVAL_OPTIONS) {
+    const opt = document.createElement('option');
+    opt.value = String(h);
+    opt.textContent = `Каждые ${h} ч.`;
+    els.updateIntervalSelect.appendChild(opt);
+  }
+}
+
+els.defaultModeSeg.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.seg-btn');
+  if (!btn) return;
+  setSegActive(els.defaultModeSeg, btn.dataset.value);
+  const saved = await window.api.networkSettingsSave({ defaultMode: btn.dataset.value });
+  state.settings = saved;
+  showToast('Режим по умолчанию сохранён.', 'success');
+});
+
+els.closeBehaviorSeg.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.seg-btn');
+  if (!btn) return;
+  setSegActive(els.closeBehaviorSeg, btn.dataset.value);
+  const saved = await window.api.networkSettingsSave({ closeBehavior: btn.dataset.value });
+  state.settings = saved;
+  showToast('Поведение окна сохранено.', 'success');
+});
+
+els.chkAutoConnect.addEventListener('change', async () => {
+  state.settings = await window.api.networkSettingsSave({ autoConnectLast: els.chkAutoConnect.checked });
+});
+els.chkStartMinimized.addEventListener('change', async () => {
+  state.settings = await window.api.networkSettingsSave({ startMinimized: els.chkStartMinimized.checked });
+});
+els.updateIntervalSelect.addEventListener('change', async () => {
+  state.settings = await window.api.networkSettingsSave({ updateIntervalHours: Number(els.updateIntervalSelect.value) });
+  startUpdateCheckLoop();
+  showToast('Интервал проверки обновлений обновлён.', 'success');
+});
+els.chkAutostart.addEventListener('change', async () => {
+  try {
+    await window.api.autostartSet(els.chkAutostart.checked);
+    showToast(els.chkAutostart.checked ? 'Автозапуск включён.' : 'Автозапуск выключен.', 'success');
+  } catch (err) {
+    showToast('Не удалось изменить автозапуск: ' + (err.message || err), 'error');
+    els.chkAutostart.checked = !els.chkAutostart.checked;
+  }
+});
+
+els.netSettingsSaveBtn.addEventListener('click', async () => {
+  els.netSettingsError.classList.add('hidden');
+  els.netSettingsSaveBtn.disabled = true;
+  try {
+    const saved = await window.api.networkSettingsSave({
+      dns1: els.netDns1.value.trim(),
+      dns2: els.netDns2.value.trim(),
+      tunIp: els.netTunIp.value.trim(),
+      socksPort: els.netSocksPort.value.trim(),
+      httpPort: els.netHttpPort.value.trim(),
+      autoSystemProxy: els.chkAutoSystemProxy.checked,
+    });
+    state.settings = saved;
+    fillNetworkTab(saved);
+    appendLog('Сетевые настройки сохранены — применятся при следующем подключении.');
+    showToast('Сетевые настройки сохранены.', 'success');
+  } catch (err) {
+    els.netSettingsError.textContent = err.message || String(err);
+    els.netSettingsError.classList.remove('hidden');
+  } finally {
+    els.netSettingsSaveBtn.disabled = false;
+  }
+});
+
+els.netSettingsResetBtn.addEventListener('click', async () => {
+  els.netSettingsError.classList.add('hidden');
+  const defaults = await window.api.networkSettingsReset();
+  state.settings = defaults;
+  fillNetworkTab(defaults);
+  fillGeneralTab(defaults);
+  appendLog('Настройки сброшены по умолчанию.');
+  showToast('Настройки сброшены по умолчанию.', 'success');
+});
+
+els.forceResetBtn.addEventListener('click', async () => {
+  if (!confirm('Принудительно сбросить состояние подключения? Используйте, только если приложение зависло на "Подключение…".')) return;
+  els.forceResetBtn.disabled = true;
+  try {
+    const status = await window.api.vpnForceReset();
+    state.vpn = status;
+    renderProfileList();
+    renderPower();
+    showToast('Состояние подключения сброшено.', 'success');
+  } catch (err) {
+    showToast('Не удалось сбросить: ' + (err.message || err), 'error');
+  } finally {
+    els.forceResetBtn.disabled = false;
+  }
+});
+
+els.openUserDataBtn.addEventListener('click', () => window.api.openUserDataDir());
+
+els.installXrayBtn.addEventListener('click', async () => {
+  els.installXrayBtn.disabled = true;
+  els.xrayProgress.classList.remove('hidden');
+  try {
+    await window.api.coreInstallXrayStack();
+    await refreshCoreStatus();
+    showToast('Xray-core установлен.', 'success');
+  } catch (err) {
+    showToast('Не удалось установить: ' + (err.message || err), 'error');
+  } finally {
+    els.installXrayBtn.disabled = false;
+  }
+});
 
 // ---- Модалка добавления ----------------------------------------------------
 
@@ -339,12 +568,14 @@ async function saveModal() {
     const result = await window.api.profilesAdd(text, name || undefined);
     await refreshProfiles();
     closeModal();
-    closeServerPanel();
+    switchView('home');
     if (result && result.multiple) {
       appendLog(`Добавлено серверов из подписки: ${result.profiles.length}.`);
+      showToast(`Добавлено серверов: ${result.profiles.length}.`, 'success');
       if (result.profiles.length) selectProfile(result.profiles[0].id);
     } else {
       selectProfile(result.id);
+      showToast('Сервер добавлен.', 'success');
     }
   } catch (err) {
     els.modalError.textContent = err.message || String(err);
@@ -356,19 +587,9 @@ async function saveModal() {
 
 els.serverCard.addEventListener('click', () => {
   if (state.profiles.length === 0) openModal();
-  else openServerPanel();
-});
-els.closeServerPanel.addEventListener('click', closeServerPanel);
-els.serverPanelBackdrop.addEventListener('click', (e) => {
-  if (e.target === els.serverPanelBackdrop) closeServerPanel();
+  else switchView('servers');
 });
 els.addProfileBtn.addEventListener('click', openModal);
-
-els.settingsBtn.addEventListener('click', openSettingsPanel);
-els.closeSettingsPanel.addEventListener('click', closeSettingsPanel);
-els.settingsPanelBackdrop.addEventListener('click', (e) => {
-  if (e.target === els.settingsPanelBackdrop) closeSettingsPanel();
-});
 
 els.modalCancel.addEventListener('click', closeModal);
 els.modalSave.addEventListener('click', saveModal);
@@ -377,11 +598,10 @@ els.modalBackdrop.addEventListener('click', (e) => {
 });
 
 // ---- Проверка обновлений (бейдж рядом с названием) ----------------------
-// Окно живёт в трее сутками (крестик прячет, не закрывает приложение — см.
-// main.js), поэтому одной проверки при входе мало: перепроверяем раз в 6
-// часов, пока сессия открыта, а не только на старте.
+// Окно живёт в трее сутками (крестик прячет, не закрывает приложение, если
+// не включено «Закрывать приложение» в Настройках), поэтому одной проверки
+// при входе мало — перепроверяем с настраиваемым интервалом.
 
-const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 let updateCheckTimer = null;
 
 function applyUpdateInfo(info) {
@@ -393,14 +613,10 @@ function applyUpdateInfo(info) {
 
 function startUpdateCheckLoop() {
   if (updateCheckTimer) clearInterval(updateCheckTimer);
+  const hours = (state.settings && state.settings.updateIntervalHours) || 6;
   const check = () => window.api.checkUpdate().then(applyUpdateInfo).catch(() => {});
   check(); // сразу, не дожидаясь первого тика интервала
-  updateCheckTimer = setInterval(check, UPDATE_CHECK_INTERVAL_MS);
-}
-
-function stopUpdateCheckLoop() {
-  clearInterval(updateCheckTimer);
-  updateCheckTimer = null;
+  updateCheckTimer = setInterval(check, hours * 60 * 60 * 1000);
 }
 
 els.updateBadge.addEventListener('click', () => {
@@ -414,11 +630,26 @@ els.relaunchAdminBtn.addEventListener('click', async () => {
     await window.api.relaunchElevated();
     // При успехе текущий процесс сам завершится (app.quit() в main.js).
   } catch (err) {
-    alert('Не удалось получить права администратора: ' + (err.message || err));
+    showToast('Не удалось получить права администратора: ' + (err.message || err), 'error');
     els.relaunchAdminBtn.disabled = false;
     els.relaunchAdminBtn.textContent = 'Перезапустить от администратора';
   }
 });
+
+// ---- Подключение / отключение ---------------------------------------------
+
+async function attemptConnect(profile, mode) {
+  els.powerBtn.disabled = true;
+  try {
+    appendLog(`— Подключение к «${profile.name}» (${mode.toUpperCase()}) —`);
+    await window.api.vpnConnect(profile.id, mode);
+  } catch (err) {
+    appendLog(`Ошибка: ${err.message || err}`);
+    showToast(err.message || String(err), 'error', 7000);
+  } finally {
+    renderPower();
+  }
+}
 
 els.powerBtn.addEventListener('click', async () => {
   const p = currentProfile();
@@ -426,19 +657,32 @@ els.powerBtn.addEventListener('click', async () => {
     openModal();
     return;
   }
-  els.powerBtn.disabled = true;
-  try {
-    if (state.vpn.state === 'connected' && state.vpn.profileId === p.id) {
+  if (state.vpn.state === 'connected' && state.vpn.profileId === p.id) {
+    els.powerBtn.disabled = true;
+    try {
       await window.api.vpnDisconnect();
-    } else {
-      appendLog(`— Подключение к «${p.name}» —`);
-      await window.api.vpnConnect(p.id);
+    } catch (err) {
+      showToast(err.message || String(err), 'error');
+    } finally {
+      renderPower();
     }
-  } catch (err) {
-    appendLog(`Ошибка: ${err.message || err}`);
-    alert(err.message || String(err));
-  } finally {
+    return;
+  }
+  await attemptConnect(p, state.mode);
+});
+
+els.cancelConnectBtn.addEventListener('click', async () => {
+  els.cancelConnectBtn.disabled = true;
+  try {
+    const status = await window.api.vpnForceReset();
+    state.vpn = status;
+    renderProfileList();
     renderPower();
+    showToast('Подключение отменено.', 'success');
+  } catch (err) {
+    showToast('Не удалось отменить: ' + (err.message || err), 'error');
+  } finally {
+    els.cancelConnectBtn.disabled = false;
   }
 });
 
@@ -453,46 +697,6 @@ function setProgress(barEl, receivedTotal) {
   barEl.classList.remove('hidden');
   barEl.querySelector('.progress-fill').style.width = pct + '%';
 }
-
-els.netSettingsSaveBtn.addEventListener('click', async () => {
-  els.netSettingsError.classList.add('hidden');
-  els.netSettingsSaveBtn.disabled = true;
-  try {
-    const saved = await window.api.networkSettingsSave({
-      dns1: els.netDns1.value.trim(),
-      dns2: els.netDns2.value.trim(),
-      tunIp: els.netTunIp.value.trim(),
-      socksPort: els.netSocksPort.value.trim(),
-    });
-    fillNetworkInputs(saved);
-    appendLog('Сетевые настройки TUN сохранены — применятся при следующем подключении.');
-  } catch (err) {
-    els.netSettingsError.textContent = err.message || String(err);
-    els.netSettingsError.classList.remove('hidden');
-  } finally {
-    els.netSettingsSaveBtn.disabled = false;
-  }
-});
-
-els.netSettingsResetBtn.addEventListener('click', async () => {
-  els.netSettingsError.classList.add('hidden');
-  const defaults = await window.api.networkSettingsReset();
-  fillNetworkInputs(defaults);
-  appendLog('Сетевые настройки TUN сброшены по умолчанию.');
-});
-
-els.installXrayBtn.addEventListener('click', async () => {
-  els.installXrayBtn.disabled = true;
-  els.xrayProgress.classList.remove('hidden');
-  try {
-    await window.api.coreInstallXrayStack();
-    await refreshCoreStatus();
-  } catch (err) {
-    alert('Не удалось установить: ' + (err.message || err));
-  } finally {
-    els.installXrayBtn.disabled = false;
-  }
-});
 
 // ---- Подписки на события из main-процесса -----------------------------------
 
@@ -593,10 +797,10 @@ els.resetAccountBtn.addEventListener('click', async () => {
 });
 
 els.logoutBtn.addEventListener('click', async () => {
-  stopUpdateCheckLoop();
+  clearInterval(updateCheckTimer);
+  updateCheckTimer = null;
   await window.api.accountLogout();
-  closeSettingsPanel();
-  closeServerPanel();
+  switchView('home');
   const status = await window.api.accountStatus();
   showAuthScreen(status);
 });
@@ -610,23 +814,52 @@ async function afterUnlock() {
   await refreshAccountBadge();
 
   const info = await window.api.appInfo();
-  els.versionText.textContent = `Версия ${info.version}`;
+  state.platform = info.platform;
+  els.versionText.textContent = `v${info.version}`;
+  els.aboutVersionText.textContent = `My List VPN, версия ${info.version}`;
+
+  // На Linux нет единого системного прокси, который стоило бы переключать
+  // автоматически (см. src/platform/linux/proxySystem.js) — прячем тумблер
+  // и показываем вместо него пояснение, что адрес нужно прописать вручную.
+  if (state.platform !== 'win32') {
+    els.autoSystemProxyRow.classList.add('hidden');
+    els.linuxProxyHint.classList.remove('hidden');
+  }
 
   state.elevated = await window.api.elevationStatus();
   els.adminBanner.classList.toggle('hidden', state.elevated);
 
   state.vpn = await window.api.vpnStatus();
+  await loadAppSettings();
 
   // Не блокирует запуск — бейдж появится, когда (и если) придёт ответ.
-  // Дальше перепроверяется периодически (см. startUpdateCheckLoop) — окно
-  // может провисеть в трее много часов без перезапуска процесса.
   startUpdateCheckLoop();
 
   await refreshProfiles();
   await refreshCoreStatus();
 
-  if (state.vpn.profileId) selectProfile(state.vpn.profileId);
-  else if (state.profiles.length) selectProfile(state.profiles[0].id);
+  if (state.vpn.profileId) {
+    selectProfile(state.vpn.profileId);
+    if (state.vpn.mode) setMode(state.vpn.mode);
+  } else if (state.profiles.length) {
+    selectProfile(state.profiles[0].id);
+  }
+
+  // Автоподключение к последнему серверу (если включено и мы ещё не подключены).
+  if (
+    state.settings &&
+    state.settings.autoConnectLast &&
+    state.settings.lastProfileId &&
+    state.vpn.state === 'disconnected'
+  ) {
+    const p = state.profiles.find((x) => x.id === state.settings.lastProfileId);
+    if (p) {
+      selectProfile(p.id);
+      const mode = state.settings.lastMode === 'proxy' && p.type !== 'wireguard' ? 'proxy' : 'tun';
+      setMode(mode);
+      attemptConnect(p, mode);
+    }
+  }
 }
 
 async function init() {

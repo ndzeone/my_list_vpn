@@ -24,6 +24,10 @@ contextBridge.exposeInMainWorld('api', {
   networkSettingsSave: (patch) => ipcRenderer.invoke('settings:networkSave', patch),
   networkSettingsReset: () => ipcRenderer.invoke('settings:networkReset'),
 
+  autostartGet: () => ipcRenderer.invoke('settings:autostartGet'),
+  autostartSet: (enabled) => ipcRenderer.invoke('settings:autostartSet', enabled),
+  openUserDataDir: () => ipcRenderer.invoke('settings:openUserDataDir'),
+
   coreStatus: () => ipcRenderer.invoke('core:status'),
   coreInstallXrayStack: () => ipcRenderer.invoke('core:installXrayStack'),
   onCoreProgress: (cb) => {
@@ -32,8 +36,9 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('core:progress', listener);
   },
 
-  vpnConnect: (id) => ipcRenderer.invoke('vpn:connect', id),
+  vpnConnect: (id, mode) => ipcRenderer.invoke('vpn:connect', { id, mode }),
   vpnDisconnect: () => ipcRenderer.invoke('vpn:disconnect'),
+  vpnForceReset: () => ipcRenderer.invoke('vpn:forceReset'),
   vpnStatus: () => ipcRenderer.invoke('vpn:status'),
   onVpnLog: (cb) => {
     const listener = (evt, line) => cb(line);

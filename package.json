@@ -1,7 +1,7 @@
 {
   "name": "my-list-vpn",
-  "version": "1.1.1",
-  "description": "My List VPN — клиент с TUN-режимом для VLESS (Xray) и AmneziaWG/WireGuard конфигов",
+  "version": "1.2.0",
+  "description": "My List VPN — клиент с режимами TUN и PROXY для VLESS/Trojan (Xray) и AmneziaWG/WireGuard конфигов",
   "main": "main.js",
   "author": "dz2ell",
   "license": "MIT",
@@ -37,12 +37,22 @@
     "win": {
       "target": [ { "target": "nsis", "arch": [ "x64" ] } ],
       "icon": "assets/icon.ico",
-      "requestedExecutionLevel": "requireAdministrator"
+      "requestedExecutionLevel": "asInvoker"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true
+    },
+    "linux": {
+      "target": [ { "target": "rpm", "arch": [ "x64" ] } ],
+      "icon": "assets/icon.png",
+      "category": "Network",
+      "executableName": "my-list-vpn",
+      "synopsis": "VPN-клиент с режимами TUN и PROXY для VLESS/Trojan/WireGuard/AmneziaWG"
+    },
+    "rpm": {
+      "depends": [ "polkit", "iproute", "systemd-resolved", "wireguard-tools" ]
     }
   }
 }
