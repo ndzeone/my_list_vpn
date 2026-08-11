@@ -77,10 +77,15 @@ async function main() {
   const version = pkg.version;
   const tag = `v${version}`;
 
+  // dist/ может содержать установщики от прошлых версий (старые сборки не
+  // удаляются автоматически) — берём строго тот, что соответствует текущей
+  // версии из package.json, а не первый попавшийся .exe.
   const installer = fs
     .readdirSync(path.join(ROOT, 'dist'))
-    .find((n) => n.toLowerCase().endsWith('.exe') && !n.toLowerCase().includes('elevate'));
-  if (!installer) throw new Error('В dist/ нет установщика — сначала выполните npm run dist.');
+    .find((n) => n.toLowerCase().endsWith('.exe') && n.includes(version) && !n.toLowerCase().includes('elevate'));
+  if (!installer) {
+    throw new Error(`В dist/ нет установщика для версии ${version} — сначала выполните npm run dist.`);
+  }
   const installerPath = path.join(ROOT, 'dist', installer);
 
   console.log(`Версия: ${version}, тег: ${tag}, файл: ${installer} (${(fs.statSync(installerPath).size / 1e6).toFixed(1)} МБ)`);

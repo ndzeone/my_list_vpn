@@ -377,12 +377,30 @@ els.modalBackdrop.addEventListener('click', (e) => {
 });
 
 // ---- Проверка обновлений (бейдж рядом с названием) ----------------------
+// Окно живёт в трее сутками (крестик прячет, не закрывает приложение — см.
+// main.js), поэтому одной проверки при входе мало: перепроверяем раз в 6
+// часов, пока сессия открыта, а не только на старте.
+
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+let updateCheckTimer = null;
 
 function applyUpdateInfo(info) {
   state.updateInfo = info;
   const show = !!(info && info.hasUpdate);
   els.updateBadge.classList.toggle('hidden', !show);
   if (show) els.updateBadgeText.textContent = `Обновление ${info.latestVersion}`;
+}
+
+function startUpdateCheckLoop() {
+  if (updateCheckTimer) clearInterval(updateCheckTimer);
+  const check = () => window.api.checkUpdate().then(applyUpdateInfo).catch(() => {});
+  check(); // сразу, не дожидаясь первого тика интервала
+  updateCheckTimer = setInterval(check, UPDATE_CHECK_INTERVAL_MS);
+}
+
+function stopUpdateCheckLoop() {
+  clearInterval(updateCheckTimer);
+  updateCheckTimer = null;
 }
 
 els.updateBadge.addEventListener('click', () => {
@@ -575,6 +593,7 @@ els.resetAccountBtn.addEventListener('click', async () => {
 });
 
 els.logoutBtn.addEventListener('click', async () => {
+  stopUpdateCheckLoop();
   await window.api.accountLogout();
   closeSettingsPanel();
   closeServerPanel();
@@ -599,7 +618,9 @@ async function afterUnlock() {
   state.vpn = await window.api.vpnStatus();
 
   // Не блокирует запуск — бейдж появится, когда (и если) придёт ответ.
-  window.api.checkUpdate().then(applyUpdateInfo).catch(() => {});
+  // Дальше перепроверяется периодически (см. startUpdateCheckLoop) — окно
+  // может провисеть в трее много часов без перезапуска процесса.
+  startUpdateCheckLoop();
 
   await refreshProfiles();
   await refreshCoreStatus();
