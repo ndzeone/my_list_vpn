@@ -94,6 +94,28 @@ npm run dist
 запустите `npm run gen-icon`, если захотите перерисовать).
 Установщик появится в `dist/`.
 
+## Публикация релиза на GitHub
+
+Бейдж обновлений в приложении (см. `src/core/updateChecker.js`) сверяется
+с [GitHub Releases](https://github.com/ndzeone/my_list_vpn/releases) этого
+репозитория. Чтобы выпустить новую версию:
+
+```powershell
+# 1. Поднять "version" в package.json
+# 2. Собрать установщик
+npm run dist
+# 3. Закоммитить и запушить код в main (обычным git push)
+# 4. Создать тег, GitHub Release и залить .exe как ассет одной командой:
+npm run release
+```
+
+`npm run release` (`build/release.js`) сам создаёт тег `vX.Y.Z` по версии из
+package.json, пушит его и через GitHub REST API публикует релиз с
+установщиком из `dist/`. Нужен файл `.release-token` в корне проекта
+(в `.gitignore`, никогда не коммитится) — GitHub fine-grained Personal
+Access Token с правом **Contents: Read and write** на этот репозиторий
+(Settings → Developer settings → Fine-grained tokens на github.com).
+
 ## Использование
 
 1. При первом запуске — экран **«Создать локальный аккаунт»**: email +

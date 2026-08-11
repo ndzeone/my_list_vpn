@@ -10,7 +10,8 @@
     "start": "electron .",
     "gen-icon": "node build/generate-icon.js",
     "fetch-amneziawg": "node build/fetch-amneziawg.js",
-    "dist": "npm run gen-icon && electron-builder"
+    "dist": "npm run gen-icon && electron-builder",
+    "release": "node build/release.js"
   },
   "devDependencies": {
     "electron": "^32.0.0",
